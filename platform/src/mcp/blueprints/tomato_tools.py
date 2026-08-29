@@ -1,8 +1,8 @@
 import json
 import logging
 import azure.functions as func
-from ..models.schemas import FoodSearchRequest, FoodSearchResponse
-from ..utils.http_client import TOMATO_SERVICE_URL, fetch_from_simulator
+from models.schemas import FoodSearchRequest, FoodSearchResponse
+from utils.http_client import TOMATO_SERVICE_URL, fetch_from_simulator
 
 bp = func.Blueprint()
 

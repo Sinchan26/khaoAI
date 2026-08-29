@@ -1,149 +1,184 @@
-# khaoAI 🍲 — Multi-Platform Agentic Food Concierge
+# khaoAI 🍽️ — Agentic Food Concierge
 
-khaoAI is an intelligent food recommendation assistant powered by **LangChain**, **LangGraph**, and **ChatOpenAI**. When a user asks in natural language ("*Hey! What should I eat now?*"), the agent analyzes:
-1. **User Location** (from live message or user preferences)
-2. **Current Time / Meal Time** (Breakfast 🥞, Lunch 🍛, Evening Snacks ☕, Dinner 🍲, Midnight 🌙)
-3. **Cross-Platform Food Search** via **MCP** (Model Context Protocol) Azure Functions querying **Tomato 🍅** and **Twiggy 🌿** simulators
-4. **Ranking & Prioritization Algorithm** that optimizes for the **cheapest price (40%)**, **highest rating (30%)**, and **fastest delivery (30%)**.
+**khaoAI** is a lightweight, single-server AI food recommendation assistant built with **FastAPI**, **LangGraph**, and **ChatOpenAI**. When a user asks natural language questions like *"What should I eat now?"* or *"Suggest some veg biryani under ₹200"*, khaoAI analyzes live context and searches across food delivery platforms (**Tomato 🍅** and **Twiggy 🌿**) to recommend the cheapest, highest-rated, and fastest delivery options.
 
 ---
 
-## 🏛️ System Architecture
+## ⚡ Architecture Highlights
+
+Consolidated into a **single FastAPI process** following the UCP-Funnel pattern:
+- **One Server, One Port (`8000`)**: Serves the modern static chat frontend at `/` and all API/WebSocket endpoints under `/api/`.
+- **In-Process LangGraph Agent**: Executes graph nodes directly in-process without multi-service latency or Azure Functions overhead.
+- **In-Memory Platform Mocks**: Tomato 🍅 and Twiggy 🌿 synthetic datasets (100 restaurants, 1,500 menu items) loaded once into memory at startup.
+- **Verbose Graph Tracing**: Live arrow-chain execution paths, per-node timing in milliseconds, step output summaries, and `/api/debug/last-run` endpoints.
 
 ```
-[ Studio (React 18 + Vite + Tailwind + Lucide) :5173 ]
-                   ↕ (WebSocket + REST)
-[ Main Gateway API (FastAPI) :8000 ]
-                   ↕ (HTTP / REST)
-[ Agent Azure Function App (LangGraph StateGraph) :7071 ]
-                   ↕ (MCP Tool Invocations)
-[ MCP Azure Function App (FastMCP Tools) :7072 ]
-         ↙                               ↘
-[ Tomato Simulator :8081 ]         [ Twiggy Simulator :8082 ]
- (50 Rests, 750 Items)              (50 Rests, 750 Items)
+One Command: uvicorn main:app --port 8000 --reload
+
+├── /api/chat        → REST + WebSocket chat (direct in-process LangGraph execution)
+├── /api/auth        → JWT user authentication (register, login, session)
+├── /api/settings    → User dietary, budget & location preferences
+├── /api/debug       → Real-time graph execution telemetry (/last-run & /traces)
+├── /health          → Health check endpoint
+│
+├── In-Memory Mocks  → Tomato 🍅 & Twiggy 🌿 catalogs (zero HTTP overhead)
+├── LangGraph Graph  → 5-node pipeline with @traced_node telemetry
+└── / (Static UI)    → Premium dark-mode HTML/CSS/JS chat with live trace viewer
 ```
 
 ---
 
-## 📂 Repository Structure
+## 🧠 LangGraph Agent Pipeline
+
+```
+START
+  ↓
+[intent_classifier]  ──(general_chat)──→ [response_formatter] ──→ END
+  ↓ (food_query)                                 ↑
+[context_resolver]                               │
+  ↓                                              │
+[food_searcher]  ──→ [ranker] ───────────────────┘
+```
+
+1. **`intent_classifier`**: Fast deterministic regex for greetings (sub-millisecond) + ChatOpenAI fallback for intent/entity extraction.
+2. **`context_resolver`**: Detects current meal window (Breakfast, Lunch, Evening Snacks, Dinner, Late Night) and resolves target location.
+3. **`food_searcher`**: Queries in-memory Tomato 🍅 and Twiggy 🌿 catalogs concurrently with keyword, cuisine, budget, and dietary filters.
+4. **`ranker`**: Computes normalized composite scores:
+   $$\text{Score} = 0.40 \times \text{Price}_{\text{inv}} + 0.30 \times \text{Rating} + 0.30 \times \text{Delivery}_{\text{inv}}$$
+   Assigns dynamic badges: `Cheapest Pick`, `Top Rated` (⭐ $\ge 4.7$), and `Superfast Delivery` ($\le 20$ mins).
+5. **`response_formatter`**: Generates a friendly, conversational foodie summary with highlighted top picks.
+
+---
+
+## 🔍 Robust Logging & Verbose Graph Tracing
+
+Every request is logged to the console with structured timestamps, component tags, and correlation IDs:
+
+```text
+[21:47:52.956] INFO   api      | [>] Chat request received  (request_id=d3860fb1f7ab, query='What should I eat now for dinner?')
+[21:47:52.957] INFO   graph    | /-- Graph START  (request_id=d3860fb1f7ab)
+[21:47:52.961] INFO   graph    | |-- [1/5] intent_classifier      >> ENTER
+[21:47:52.975] INFO   graph    | |-- [1/5] intent_classifier      [+] EXIT  (14ms)  intent=food_query  entities=none
+[21:47:52.976] INFO   graph    | |-- Route: intent_classifier -> context_resolver  (condition: intent=food_query)
+[21:47:52.977] INFO   graph    | |-- [2/5] context_resolver       >> ENTER
+[21:47:52.977] INFO   graph    | |-- [2/5] context_resolver       [+] EXIT  (0ms)  meal_type=dinner  location=Salt Lake, Sector V
+[21:47:52.979] INFO   graph    | |-- [3/5] food_searcher          >> ENTER
+[21:47:52.980] INFO   graph    | │  └─ Searching Tomato (location=Salt Lake, Sector V, meal=dinner, query=None)
+[21:47:52.982] INFO   graph    | │  └─ Searching Twiggy (location=Salt Lake, Sector V, meal=dinner, query=None)
+[21:47:52.984] INFO   graph    | |-- [3/5] food_searcher          [+] EXIT  (5ms)  tomato_hits=20  twiggy_hits=20  total=40
+[21:47:52.986] INFO   graph    | |-- [4/5] ranker                 >> ENTER
+[21:47:52.987] INFO   graph    | |-- [4/5] ranker                 [+] EXIT  (0ms)  top_pick=Yellow Dal Tadka with Kashmiri Pulao ₹175 ⭐5.0  ranked=6
+[21:47:52.988] INFO   graph    | |-- [5/5] response_formatter     >> ENTER
+[21:47:53.481] INFO   graph    | |-- [5/5] response_formatter     [+] EXIT  (492ms)  reply_len=297  has_reply=True
+[21:47:53.482] INFO   graph    | \-- Graph END  [+]  (525ms)  path=[intent_classifier -> context_resolver -> food_searcher -> ranker -> response_formatter]
+[21:47:53.482] INFO   api      | [<] Chat response sent  (request_id=d3860fb1f7ab, recommendations=6)
+```
+
+### Debug API Endpoints
+- **`GET /api/debug/last-run`**: Inspect the JSON telemetry of the most recent graph execution (nodes visited, duration in ms, error status, step summaries).
+- **`GET /api/debug/traces`**: Ring buffer containing the last 20 graph execution traces.
+
+---
+
+## 📁 Repository Structure
 
 ```
 khaoAI/
-├── .agents/                          # Skills and custom agent rules
-├── db/
-│   ├── migrations/
-│   │   └── 001_init.sql              # PostgreSQL schema for users and preferences
-│   └── README.md                     # Database migration instructions
+├── main.py                     # Single FastAPI application entry point
+├── requirements.txt            # Unified dependencies file
+├── test_server.py              # Automated test suite
+├── .env.example                # Environment variables template
 │
-├── platform/
-│   └── src/
-│       ├── api/                      # Main Gateway API (FastAPI on :8000)
-│       │   ├── main.py
-│       │   ├── config.py
-│       │   ├── models/               # Pydantic v2 schemas
-│       │   ├── routes/               # /api/auth, /api/settings, /api/chat (WebSocket)
-│       │   ├── services/             # Auth, Chat, Agent client
-│       │   └── utils/                # JWT & Password hashing
-│       │
-│       ├── agent/                    # Agent Azure Function App (:7071)
-│       │   ├── function_app.py       # Azure Functions v2 entry point
-│       │   ├── blueprints/           # POST /api/orchestrate
-│       │   ├── graph/                # LangGraph StateGraph & nodes
-│       │   │   ├── nodes/            # Intent, Context, Food Searcher, Ranker, Formatter
-│       │   │   ├── builder.py
-│       │   │   └── state.py
-│       │   ├── tools/                # MCP client
-│       │   └── prompts/              # Centralized system prompts
-│       │
-│       ├── mcp/                      # MCP Azure Function App (:7072)
-│       │   ├── function_app.py       # Azure Functions v2 entry point
-│       │   ├── blueprints/           # Tomato & Twiggy search & menu tools
-│       │   ├── models/               # MCP tool schemas
-│       │   └── utils/                # Simulator HTTP client
-│       │
-│       └── services/                 # Synthetic Food Delivery Simulators
-│           ├── tomato_simulator/     # Tomato API (:8081)
-│           └── twiggy_simulator/     # Twiggy API (:8082)
+├── frontend/                   # Modern Vanilla Dark Chat UI (Served at /)
+│   ├── index.html              # Single page layout (Auth, Chat, Modals)
+│   ├── style.css               # HSL color system, glassmorphism, animations
+│   └── app.js                  # WebSocket client, streaming tokens, food cards
 │
-└── studio/                           # Modern Chat UI (React + Vite + Tailwind + Lucide :5173)
-    ├── src/
-    │   ├── components/               # Header, Sidebar, FoodCard, MessageBubble, ChatInput
-    │   ├── contexts/                 # AuthContext
-    │   ├── hooks/                    # useChat (WebSocket streaming)
-    │   └── styles/                   # globals.css & design tokens
-    └── package.json
+├── wrapper/                    # Application layer (API, Agent, Auth)
+│   ├── log.py                  # Structured logging, GraphTrace & @traced_node
+│   ├── models.py               # Pydantic v2 schemas (Auth, Chat, Food DTO)
+│   ├── prompts.py              # Intent and Response system prompts
+│   ├── auth.py                 # JWT security, password hashing & auth middleware
+│   ├── state.py                # In-memory session state management
+│   ├── llm.py                  # OpenAI config, LangGraph builder & orchestrate()
+│   ├── routes/
+│   │   ├── auth.py             # POST /api/auth/register, /api/auth/login, /api/auth/me
+│   │   ├── chat.py             # POST /api/chat & WS /api/chat/ws/{session_id}
+│   │   ├── config.py           # GET & PUT /api/settings
+│   │   └── debug.py            # GET /api/debug/last-run & /api/debug/traces
+│   └── graph/
+│       ├── state.py            # FoodAgentState TypedDict
+│       └── nodes.py            # All 5 graph nodes wrapped with @traced_node
+│
+├── mocks/                      # In-process food delivery simulators
+│   └── store.py                # In-memory Tomato + Twiggy data store & filtering
+│
+├── db/                         # Database resources
+│   └── migrations/
+│       └── 001_init.sql        # Optional PostgreSQL schema for persistence
+│
+└── platform/                   # Preserved original microservice blueprints
 ```
 
 ---
 
-## 🚀 Quickstart Guide
+## 🚀 Getting Started
 
-### 1. Prerequisites
-- Python 3.11 or 3.12+
-- Node.js 18+ & npm
-- Azure Functions Core Tools (`func`) (optional for local functions, or use python runner)
-- OpenAI API Key (optional — system includes smart deterministic fallbacks)
+### 1. Installation
 
-### 2. Environment Configuration
-Copy the `.env.example` file:
+Clone repository and install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Environment Setup
+
+Create `.env` file from `.env.example`:
 ```bash
 cp .env.example .env
 ```
-Add your `OPENAI_API_KEY=sk-...` to `.env`.
 
----
+Edit `.env`:
+```ini
+OPENAI_API_KEY=sk-proj-your-openai-api-key   # Optional: fallback heuristics included if omitted
+OPENAI_MODEL=gpt-4o-mini
+JWT_SECRET_KEY=khaoai-super-secret-key-2026
+DEFAULT_LOCATION=Salt Lake, Sector V
 
-## 🖥️ Starting the Services (Order of Startup)
-
-Open separate terminal tabs for each service:
-
-### Terminal 1: Tomato Simulator (Port 8081)
-```bash
-cd platform/src/services/tomato_simulator
-uvicorn main:app --port 8081 --reload
+# Log Level Options:
+LOG_LEVEL=INFO                                      # Simple global level
+# LOG_LEVEL=INFO,graph=DEBUG,mocks=WARNING,api=INFO # Multi-level / per-component overrides
+# LOG_LEVEL_GRAPH=DEBUG                             # Dedicated component env var
 ```
 
-### Terminal 2: Twiggy Simulator (Port 8082)
-```bash
-cd platform/src/services/twiggy_simulator
-uvicorn main:app --port 8082 --reload
-```
+### 3. Run Application
 
-### Terminal 3: MCP Azure Function App (Port 7072)
+Start the server:
 ```bash
-cd platform/src/mcp
-func start --port 7072
-```
-*(Or if using Uvicorn directly with ASGI adapter)*
-
-### Terminal 4: Agent Azure Function App (Port 7071)
-```bash
-cd platform/src/agent
-func start --port 7071
-```
-
-### Terminal 5: Main Gateway API (Port 8000)
-```bash
-cd platform/src/api
 uvicorn main:app --port 8000 --reload
 ```
 
-### Terminal 6: Studio Frontend (Port 5173)
-```bash
-cd studio
-npm install
-npm run dev
+Open your browser at:
+```
+http://localhost:8000
 ```
 
-Visit **`http://localhost:5173`** in your browser!
+- **Demo Account**: `demo@khaoai.com` / `demo123` (or register any new account)
 
 ---
 
-## 🧠 Ranking & Prioritization Logic
+## 🧪 Automated Testing
 
-The ranking algorithm computes a composite score:
-$$\text{Score} = 0.40 \times \text{Norm}(\text{Price}^{-1}) + 0.30 \times \text{Norm}(\text{Rating}) + 0.30 \times \text{Norm}(\text{Delivery}^{-1})$$
+Run the automated end-to-end verification suite:
+```bash
+python test_server.py
+```
 
-- **Cheapest First ($40\%$)**: Rewards maximum affordability.
-- **Top Rated ($30\%$)**: Ensures quality from customer feedback.
-- **Fastest Delivery ($30\%$)**: Prioritizes quick prep & drop-off.
+This verifies:
+1. `/health` check
+2. Static frontend delivery at `/`
+3. User login & JWT validation
+4. User settings retrieval
+5. Fast-path intent routing (greeting in $<30$ms)
+6. Multi-platform search & ranking with composite scoring
+7. `/api/debug/last-run` trace generation

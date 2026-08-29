@@ -343,6 +343,7 @@ html, body {
 }
 .food-card-platform.tomato { background: hsla(5, 82%, 56%, 0.15); color: var(--tomato); }
 .food-card-platform.twiggy { background: hsla(145, 55%, 46%, 0.15); color: var(--twiggy); }
+.food-card-platform.swiggy { background: hsla(20, 90%, 55%, 0.16); color: hsl(20, 90%, 64%); }
 
 .food-card-restaurant {
   font-size: 0.78rem;
@@ -481,6 +482,8 @@ html, body {
   padding: 1.5rem;
   width: 100%;
   max-width: 380px;
+  max-height: 90vh;
+  overflow-y: auto;
   animation: fadeUp 0.3s ease;
 }
 
@@ -497,6 +500,16 @@ html, body {
   flex-direction: column;
   gap: 0.8rem;
 }
+.provider-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.provider-panel p { color: var(--text-secondary); font-size: 0.8rem; }
 .modal-body label {
   display: flex;
   flex-direction: column;

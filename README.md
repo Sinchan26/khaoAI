@@ -1,184 +1,129 @@
-# khaoAI 🍽️ — Agentic Food Concierge
+# khaoAI — Swiggy Food Ranking Assistant
 
-**khaoAI** is a lightweight, single-server AI food recommendation assistant built with **FastAPI**, **LangGraph**, and **ChatOpenAI**. When a user asks natural language questions like *"What should I eat now?"* or *"Suggest some veg biryani under ₹200"*, khaoAI analyzes live context and searches across food delivery platforms (**Tomato 🍅** and **Twiggy 🌿**) to recommend the cheapest, highest-rated, and fastest delivery options.
+khaoAI is a lightweight, single-process FastAPI and LangGraph application that
+searches the official Swiggy Food MCP server and ranks live menu items using
+price, rating, availability, and persisted user preferences.
 
----
+The current application is recommendation-only. Cart, payment, confirmation,
+and order-placement tools are blocked by a deterministic allowlist in
+`wrapper/providers/swiggy.py`.
 
-## ⚡ Architecture Highlights
-
-Consolidated into a **single FastAPI process** following the UCP-Funnel pattern:
-- **One Server, One Port (`8000`)**: Serves the modern static chat frontend at `/` and all API/WebSocket endpoints under `/api/`.
-- **In-Process LangGraph Agent**: Executes graph nodes directly in-process without multi-service latency or Azure Functions overhead.
-- **In-Memory Platform Mocks**: Tomato 🍅 and Twiggy 🌿 synthetic datasets (100 restaurants, 1,500 menu items) loaded once into memory at startup.
-- **Verbose Graph Tracing**: Live arrow-chain execution paths, per-node timing in milliseconds, step output summaries, and `/api/debug/last-run` endpoints.
-
-```
-One Command: uvicorn main:app --port 8000 --reload
-
-├── /api/chat        → REST + WebSocket chat (direct in-process LangGraph execution)
-├── /api/auth        → JWT user authentication (register, login, session)
-├── /api/settings    → User dietary, budget & location preferences
-├── /api/debug       → Real-time graph execution telemetry (/last-run & /traces)
-├── /health          → Health check endpoint
-│
-├── In-Memory Mocks  → Tomato 🍅 & Twiggy 🌿 catalogs (zero HTTP overhead)
-├── LangGraph Graph  → 5-node pipeline with @traced_node telemetry
-└── / (Static UI)    → Premium dark-mode HTML/CSS/JS chat with live trace viewer
-```
-
----
-
-## 🧠 LangGraph Agent Pipeline
-
-```
-START
-  ↓
-[intent_classifier]  ──(general_chat)──→ [response_formatter] ──→ END
-  ↓ (food_query)                                 ↑
-[context_resolver]                               │
-  ↓                                              │
-[food_searcher]  ──→ [ranker] ───────────────────┘
-```
-
-1. **`intent_classifier`**: Fast deterministic regex for greetings (sub-millisecond) + ChatOpenAI fallback for intent/entity extraction.
-2. **`context_resolver`**: Detects current meal window (Breakfast, Lunch, Evening Snacks, Dinner, Late Night) and resolves target location.
-3. **`food_searcher`**: Queries in-memory Tomato 🍅 and Twiggy 🌿 catalogs concurrently with keyword, cuisine, budget, and dietary filters.
-4. **`ranker`**: Computes normalized composite scores:
-   $$\text{Score} = 0.40 \times \text{Price}_{\text{inv}} + 0.30 \times \text{Rating} + 0.30 \times \text{Delivery}_{\text{inv}}$$
-   Assigns dynamic badges: `Cheapest Pick`, `Top Rated` (⭐ $\ge 4.7$), and `Superfast Delivery` ($\le 20$ mins).
-5. **`response_formatter`**: Generates a friendly, conversational foodie summary with highlighted top picks.
-
----
-
-## 🔍 Robust Logging & Verbose Graph Tracing
-
-Every request is logged to the console with structured timestamps, component tags, and correlation IDs:
+## Active architecture
 
 ```text
-[21:47:52.956] INFO   api      | [>] Chat request received  (request_id=d3860fb1f7ab, query='What should I eat now for dinner?')
-[21:47:52.957] INFO   graph    | /-- Graph START  (request_id=d3860fb1f7ab)
-[21:47:52.961] INFO   graph    | |-- [1/5] intent_classifier      >> ENTER
-[21:47:52.975] INFO   graph    | |-- [1/5] intent_classifier      [+] EXIT  (14ms)  intent=food_query  entities=none
-[21:47:52.976] INFO   graph    | |-- Route: intent_classifier -> context_resolver  (condition: intent=food_query)
-[21:47:52.977] INFO   graph    | |-- [2/5] context_resolver       >> ENTER
-[21:47:52.977] INFO   graph    | |-- [2/5] context_resolver       [+] EXIT  (0ms)  meal_type=dinner  location=Salt Lake, Sector V
-[21:47:52.979] INFO   graph    | |-- [3/5] food_searcher          >> ENTER
-[21:47:52.980] INFO   graph    | │  └─ Searching Tomato (location=Salt Lake, Sector V, meal=dinner, query=None)
-[21:47:52.982] INFO   graph    | │  └─ Searching Twiggy (location=Salt Lake, Sector V, meal=dinner, query=None)
-[21:47:52.984] INFO   graph    | |-- [3/5] food_searcher          [+] EXIT  (5ms)  tomato_hits=20  twiggy_hits=20  total=40
-[21:47:52.986] INFO   graph    | |-- [4/5] ranker                 >> ENTER
-[21:47:52.987] INFO   graph    | |-- [4/5] ranker                 [+] EXIT  (0ms)  top_pick=Yellow Dal Tadka with Kashmiri Pulao ₹175 ⭐5.0  ranked=6
-[21:47:52.988] INFO   graph    | |-- [5/5] response_formatter     >> ENTER
-[21:47:53.481] INFO   graph    | |-- [5/5] response_formatter     [+] EXIT  (492ms)  reply_len=297  has_reply=True
-[21:47:53.482] INFO   graph    | \-- Graph END  [+]  (525ms)  path=[intent_classifier -> context_resolver -> food_searcher -> ranker -> response_formatter]
-[21:47:53.482] INFO   api      | [<] Chat response sent  (request_id=d3860fb1f7ab, recommendations=6)
+Browser
+  ├─ JWT auth and persistent settings
+  ├─ Swiggy OAuth 2.1 + PKCE
+  └─ REST/WebSocket chat
+          │
+          ▼
+FastAPI :8000
+  ├─ PostgreSQL: users, settings, sessions, messages, provider connections
+  ├─ LangGraph: intent → context → Swiggy search → rank → response
+  ├─ Swiggy MCP read-only client
+  └─ Static frontend
 ```
 
-### Debug API Endpoints
-- **`GET /api/debug/last-run`**: Inspect the JSON telemetry of the most recent graph execution (nodes visited, duration in ms, error status, step summaries).
-- **`GET /api/debug/traces`**: Ring buffer containing the last 20 graph execution traces.
+### Repository layout
 
----
-
-## 📁 Repository Structure
-
-```
-khaoAI/
-├── main.py                     # Single FastAPI application entry point
-├── requirements.txt            # Unified dependencies file
-├── test_server.py              # Automated test suite
-├── .env.example                # Environment variables template
-│
-├── frontend/                   # Modern Vanilla Dark Chat UI (Served at /)
-│   ├── index.html              # Single page layout (Auth, Chat, Modals)
-│   ├── style.css               # HSL color system, glassmorphism, animations
-│   └── app.js                  # WebSocket client, streaming tokens, food cards
-│
-├── wrapper/                    # Application layer (API, Agent, Auth)
-│   ├── log.py                  # Structured logging, GraphTrace & @traced_node
-│   ├── models.py               # Pydantic v2 schemas (Auth, Chat, Food DTO)
-│   ├── prompts.py              # Intent and Response system prompts
-│   ├── auth.py                 # JWT security, password hashing & auth middleware
-│   ├── state.py                # In-memory session state management
-│   ├── llm.py                  # OpenAI config, LangGraph builder & orchestrate()
-│   ├── routes/
-│   │   ├── auth.py             # POST /api/auth/register, /api/auth/login, /api/auth/me
-│   │   ├── chat.py             # POST /api/chat & WS /api/chat/ws/{session_id}
-│   │   ├── config.py           # GET & PUT /api/settings
-│   │   └── debug.py            # GET /api/debug/last-run & /api/debug/traces
-│   └── graph/
-│       ├── state.py            # FoodAgentState TypedDict
-│       └── nodes.py            # All 5 graph nodes wrapped with @traced_node
-│
-├── mocks/                      # In-process food delivery simulators
-│   └── store.py                # In-memory Tomato + Twiggy data store & filtering
-│
-├── db/                         # Database resources
-│   └── migrations/
-│       └── 001_init.sql        # Optional PostgreSQL schema for persistence
-│
-└── platform/                   # Preserved original microservice blueprints
+```text
+main.py
+frontend/                       Active vanilla frontend
+wrapper/
+  db.py                         Async SQLAlchemy engine
+  db_models.py                  Persistent entities
+  auth.py                       Argon2 + JWT authentication
+  providers/swiggy.py           OAuth, encrypted token, MCP, normalizer/cache
+  graph/                        LangGraph state and nodes
+  routes/                       Auth, settings, chat, debug, provider routes
+db/alembic/                     PostgreSQL migrations
+mocks/data/                     20 small deterministic test fixtures only
+tests/                          Provider safety, normalization, ranking tests
+legacy/                         Archived Azure services and former React studio
 ```
 
----
+Nothing under `legacy/` is imported by the active application.
 
-## 🚀 Getting Started
+## Implemented phases 1–5
 
-### 1. Installation
+1. PostgreSQL persistence, Alembic, Argon2 passwords, JWT authentication, and
+   per-user session ownership.
+2. Swiggy OAuth with PKCE, encrypted access-token storage, expiration handling,
+   saved-address selection, and a read-only MCP client.
+3. Live `search_menu` integration, Swiggy response normalization, hard filters,
+   preference-aware ranking, and recommendation snapshots in chat messages.
+4. Persistent chat history restored into LangGraph with a user/session thread ID.
+5. MCP retries, short-lived cache, safe provider errors, protected debug/history
+   endpoints, browser-output escaping, compact fixtures, and automated tests.
 
-Clone repository and install dependencies:
+## Setup
+
+### 1. Create environment
+
 ```bash
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
 ```
 
-### 2. Environment Setup
+On Linux/macOS, activate with `source .venv/bin/activate` and copy with
+`cp .env.example .env`.
 
-Create `.env` file from `.env.example`:
+Generate the token-encryption key shown in `.env.example` and set a strong,
+random `JWT_SECRET_KEY`.
+
+### 2. Start PostgreSQL and migrate
+
+Start the included local PostgreSQL service (or use an existing PostgreSQL
+instance), confirm `DATABASE_URL`, then migrate:
+
 ```bash
-cp .env.example .env
+docker compose up -d postgres
+alembic upgrade head
 ```
 
-Edit `.env`:
-```ini
-OPENAI_API_KEY=sk-proj-your-openai-api-key   # Optional: fallback heuristics included if omitted
-OPENAI_MODEL=gpt-4o-mini
-JWT_SECRET_KEY=khaoai-super-secret-key-2026
-DEFAULT_LOCATION=Salt Lake, Sector V
+Keep `AUTO_CREATE_TABLES=false` and use Alembic so schema history remains
+consistent. The flag exists only for isolated throwaway tests.
 
-# Log Level Options:
-LOG_LEVEL=INFO                                      # Simple global level
-# LOG_LEVEL=INFO,graph=DEBUG,mocks=WARNING,api=INFO # Multi-level / per-component overrides
-# LOG_LEVEL_GRAPH=DEBUG                             # Dedicated component env var
-```
+### 3. Run
 
-### 3. Run Application
-
-Start the server:
 ```bash
 uvicorn main:app --port 8000 --reload
 ```
 
-Open your browser at:
+Open `http://localhost:8000`, register a khaoAI account, open Settings, connect
+Swiggy using phone/OTP, and choose one of the addresses returned by Swiggy.
+
+Swiggy currently uses five-day access tokens without refresh-token support. A
+401 or expiry requires reconnecting through Settings.
+
+## Safe tool boundary
+
+Allowed MCP tools:
+
+- `get_addresses`
+- `search_menu`
+- `search_restaurants`
+- `get_restaurant_menu`
+
+Blocked categories include cart modification, coupons, payment, confirmation,
+checkout, ordering, cancellation, and tracking. Adding any new tool requires a
+code review and an explicit change to `READ_ONLY_TOOLS`.
+
+## Tests
+
+Unit tests never call live Swiggy:
+
+```bash
+pytest -q
 ```
-http://localhost:8000
-```
 
-- **Demo Account**: `demo@khaoai.com` / `demo123` (or register any new account)
+The database smoke test requires a disposable PostgreSQL database:
 
----
-
-## 🧪 Automated Testing
-
-Run the automated end-to-end verification suite:
 ```bash
 python test_server.py
 ```
 
-This verifies:
-1. `/health` check
-2. Static frontend delivery at `/`
-3. User login & JWT validation
-4. User settings retrieval
-5. Fast-path intent routing (greeting in $<30$ms)
-6. Multi-platform search & ranking with composite scoring
-7. `/api/debug/last-run` trace generation
+Live OAuth verification is intentionally manual because it requires the user's
+Swiggy phone/OTP consent and a saved delivery address.

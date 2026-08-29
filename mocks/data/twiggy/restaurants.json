@@ -1,0 +1,41 @@
+[
+  {
+    "id": "twi_rest_001",
+    "name": "Arsalan Express",
+    "platform": "Twiggy",
+    "location": "Bandra West, Mumbai",
+    "cuisine": "South Indian",
+    "rating": 3.9,
+    "ratings_count": 1833,
+    "avg_delivery_time_mins": 42,
+    "price_for_two": 1011,
+    "is_pure_veg": false,
+    "is_open": true
+  },
+  {
+    "id": "twi_rest_002",
+    "name": "Royal Aminia Cloud",
+    "platform": "Twiggy",
+    "location": "Koramangala, Bangalore",
+    "cuisine": "Rolls & Wraps",
+    "rating": 4.5,
+    "ratings_count": 3604,
+    "avg_delivery_time_mins": 32,
+    "price_for_two": 964,
+    "is_pure_veg": false,
+    "is_open": true
+  },
+  {
+    "id": "twi_rest_003",
+    "name": "Mocambo Classic Diner",
+    "platform": "Twiggy",
+    "location": "HSR Layout, Bangalore",
+    "cuisine": "Street Food",
+    "rating": 4.2,
+    "ratings_count": 295,
+    "avg_delivery_time_mins": 17,
+    "price_for_two": 405,
+    "is_pure_veg": false,
+    "is_open": true
+  }
+]

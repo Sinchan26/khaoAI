@@ -25,7 +25,7 @@ _tomato_items: list[dict[str, Any]] = []
 _twiggy_restaurants: list[dict[str, Any]] = []
 _twiggy_items: list[dict[str, Any]] = []
 
-_DATA_ROOT = Path(__file__).resolve().parent.parent / "platform" / "src" / "services"
+_DATA_ROOT = Path(__file__).resolve().parent / "data"
 
 
 def _load_json(path: Path) -> list[dict[str, Any]]:
@@ -37,8 +37,8 @@ async def load() -> None:
     """Load all JSON data files into memory.  Called from the FastAPI lifespan."""
     global _tomato_restaurants, _tomato_items, _twiggy_restaurants, _twiggy_items
 
-    tomato_dir = _DATA_ROOT / "tomato_simulator" / "data"
-    twiggy_dir = _DATA_ROOT / "twiggy_simulator" / "data"
+    tomato_dir = _DATA_ROOT / "tomato"
+    twiggy_dir = _DATA_ROOT / "twiggy"
 
     _tomato_restaurants = _load_json(tomato_dir / "restaurants.json")
     _tomato_items = _load_json(tomato_dir / "menu_items.json")

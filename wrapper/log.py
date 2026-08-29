@@ -74,7 +74,7 @@ def setup_logging(level: str = "INFO") -> None:
         root.propagate = False
 
     # Set default level for all components
-    for comp in ("api", "graph", "auth", "mocks"):
+    for comp in ("api", "graph", "auth", "mocks", "provider", "db"):
         logging.getLogger(f"khaoai.{comp}").setLevel(base_level)
 
     # Apply inline comma-separated overrides (e.g. graph=DEBUG or graph:DEBUG)
@@ -88,7 +88,7 @@ def setup_logging(level: str = "INFO") -> None:
                 logging.getLogger(f"khaoai.{comp_name}").setLevel(lvl_val)
 
     # Apply dedicated env vars if present (e.g. LOG_LEVEL_GRAPH=DEBUG)
-    for comp in ("api", "graph", "auth", "mocks"):
+    for comp in ("api", "graph", "auth", "mocks", "provider", "db"):
         env_val = os.getenv(f"LOG_LEVEL_{comp.upper()}")
         if env_val:
             lvl_val = getattr(logging, env_val.strip().upper(), None)
@@ -134,6 +134,7 @@ class GraphTrace:
     path: list[str] = field(default_factory=list)
     total_duration_ms: float = 0.0
     error: str | None = None
+    owner_user_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

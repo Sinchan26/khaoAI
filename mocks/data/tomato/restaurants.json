@@ -1,0 +1,41 @@
+[
+  {
+    "id": "tom_rest_001",
+    "name": "Arsalan Royal Biryani",
+    "platform": "Tomato",
+    "location": "Salt Lake, Sector I",
+    "cuisine": "Chinese",
+    "rating": 3.6,
+    "ratings_count": 1978,
+    "avg_delivery_time_mins": 30,
+    "price_for_two": 442,
+    "is_pure_veg": false,
+    "is_open": true
+  },
+  {
+    "id": "tom_rest_002",
+    "name": "Aminia Heritage Mughlai",
+    "platform": "Tomato",
+    "location": "Salt Lake, Sector V",
+    "cuisine": "Mughlai",
+    "rating": 4.6,
+    "ratings_count": 692,
+    "avg_delivery_time_mins": 35,
+    "price_for_two": 516,
+    "is_pure_veg": false,
+    "is_open": true
+  },
+  {
+    "id": "tom_rest_003",
+    "name": "Mocambo Continental",
+    "platform": "Tomato",
+    "location": "Park Street",
+    "cuisine": "South Indian",
+    "rating": 4.5,
+    "ratings_count": 2321,
+    "avg_delivery_time_mins": 40,
+    "price_for_two": 840,
+    "is_pure_veg": false,
+    "is_open": true
+  }
+]

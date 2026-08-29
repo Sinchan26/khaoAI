@@ -1,22 +1,22 @@
 # khaoAI Database Migrations
 
-This folder contains database migration scripts for PostgreSQL.
+This folder contains Alembic migrations for PostgreSQL.
 
 ## How to run migrations manually
 
-Ensure PostgreSQL is running and your database is created:
+Ensure PostgreSQL is running and the database exists:
 
 ```bash
 createdb khaoai
 ```
 
-### Apply Migration 001
+### Apply all migrations
 ```bash
-psql -U postgres -d khaoai -f migrations/001_init.sql
+alembic upgrade head
 ```
 
 ### Environment Variable
 In your `.env` or `local.settings.json`:
 ```env
-DATABASE_URL=postgresql://postgres:password@localhost:5432/khaoai
+DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/khaoai
 ```

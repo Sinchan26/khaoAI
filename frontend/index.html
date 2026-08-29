@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>khaoAI — Smart Food Concierge</title>
-  <meta name="description" content="AI-powered food concierge that finds the cheapest, highest-rated, fastest delivery options across Tomato and Twiggy." />
+  <meta name="description" content="AI-powered concierge that ranks live Swiggy food results using your preferences." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -68,12 +68,12 @@
       <div id="welcome-screen" class="welcome-screen">
         <div class="welcome-icon">🍽️</div>
         <h2>What are you craving?</h2>
-        <p>I'll find the cheapest, highest-rated, and fastest options across <strong>Tomato 🍅</strong> and <strong>Twiggy 🌿</strong></p>
+        <p>I'll rank live food options from <strong>Swiggy</strong> using price, rating, availability, and your preferences.</p>
         <div class="quick-chips">
           <button class="chip" data-prompt="What should I eat now?">🤔 What should I eat?</button>
           <button class="chip" data-prompt="I want some biryani for dinner">🍗 Biryani for dinner</button>
           <button class="chip" data-prompt="Suggest me something veg under 200">🥗 Veg under ₹200</button>
-          <button class="chip" data-prompt="Best rated momos near Salt Lake">🥟 Best momos nearby</button>
+          <button class="chip" data-prompt="Best rated momos">🥟 Best momos nearby</button>
           <button class="chip" data-prompt="I'm craving South Indian breakfast">🥞 South Indian breakfast</button>
           <button class="chip" data-prompt="Cheapest pizza delivery right now">🍕 Cheapest pizza</button>
         </div>
@@ -102,8 +102,17 @@
         <button id="settings-close" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
+        <div class="provider-panel">
+          <strong>Swiggy connection</strong>
+          <p id="swiggy-status">Checking connection…</p>
+          <button id="swiggy-connect" class="btn-primary" type="button">Connect Swiggy</button>
+          <button id="swiggy-addresses" class="btn-primary" type="button" style="display:none;">Choose delivery address</button>
+          <label id="swiggy-address-wrap" style="display:none;">Swiggy delivery address
+            <select id="swiggy-address-select"></select>
+          </label>
+        </div>
         <label>Default Location
-          <input id="set-location" type="text" value="Salt Lake, Sector V" />
+          <input id="set-location" type="text" value="Salt Lake, Sector V" readonly />
         </label>
         <label>Dietary Preference
           <select id="set-diet">

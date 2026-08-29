@@ -1,179 +1,124 @@
-"""Auth service, JWT utilities, and FastAPI auth middleware.
-
-Consolidated from the original:
-  - platform/src/api/services/auth_service.py
-  - platform/src/api/middleware/auth_middleware.py
-  - platform/src/api/utils/security.py
-"""
+"""Database-backed authentication, Argon2 passwords, and JWT dependencies."""
 from __future__ import annotations
 
-import hashlib
-import os
-import uuid
-from datetime import datetime, timedelta
-from typing import Any, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import UUID
 
 import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from wrapper.config import settings
+from wrapper.db import get_db_session
+from wrapper.db_models import User, UserPreference
 from wrapper.log import get_logger
-from wrapper.models import (
-    TokenResponse,
-    UserLogin,
-    UserProfile,
-    UserRegister,
-    UserSettings,
-)
+from wrapper.models import TokenResponse, UserLogin, UserProfile, UserRegister
 
 _log = get_logger("auth")
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "khaoai-super-secret-key-change-in-prod")
+_password_hasher = PasswordHasher()
+_security = HTTPBearer(auto_error=False)
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
-
-
-# ---------------------------------------------------------------------------
-# JWT / Password utilities
-# ---------------------------------------------------------------------------
-
-_SALT = "khaoai_secure_salt_2026"
 
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256((password + _SALT).encode("utf-8")).hexdigest()
+    return _password_hasher.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return hash_password(plain) == hashed
-
-
-def create_access_token(data: dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
-    to_encode["exp"] = expire
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-
-
-def decode_access_token(token: str) -> Optional[dict[str, Any]]:
     try:
-        return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except Exception:
+        return _password_hasher.verify(hashed, plain)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
+
+
+def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
+    payload = data.copy()
+    payload["exp"] = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=settings.jwt_expire_minutes)
+    )
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=JWT_ALGORITHM)
+
+
+def decode_access_token(token: str) -> dict[str, Any] | None:
+    try:
+        return jwt.decode(token, settings.jwt_secret_key, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
         return None
 
 
-# ---------------------------------------------------------------------------
-# In-memory stores
-# ---------------------------------------------------------------------------
+def user_profile(record: User) -> UserProfile:
+    return UserProfile(id=str(record.id), email=record.email, display_name=record.display_name)
 
-USERS_DB: dict[str, dict] = {}
-USER_SETTINGS_DB: dict[str, UserSettings] = {}
-
-# Seed demo user
-_demo_id = str(uuid.uuid4())
-USERS_DB["demo@khaoai.com"] = {
-    "id": _demo_id,
-    "email": "demo@khaoai.com",
-    "password_hash": hash_password("demo123"),
-    "display_name": "Foodie Sinchan",
-}
-USER_SETTINGS_DB[_demo_id] = UserSettings(
-    user_id=_demo_id,
-    default_location="Salt Lake, Sector V",
-    dietary_preference="all",
-    budget_preference="medium",
-    max_delivery_time=45,
-)
-_log.info("Seeded demo user: demo@khaoai.com / demo123")
-
-
-# ---------------------------------------------------------------------------
-# Auth service
-# ---------------------------------------------------------------------------
 
 class AuthService:
-    @staticmethod
-    def register(user_data: UserRegister) -> TokenResponse:
-        email = user_data.email.lower().strip()
-        if email in USERS_DB:
-            _log.warning("Register failed: %s (already exists)", email)
+    async def register(self, data: UserRegister, session: AsyncSession) -> TokenResponse:
+        email = data.email.lower().strip()
+        if await session.scalar(select(User).where(User.email == email)):
             raise ValueError("Email is already registered")
-
-        user_id = str(uuid.uuid4())
-        USERS_DB[email] = {
-            "id": user_id,
-            "email": email,
-            "password_hash": hash_password(user_data.password),
-            "display_name": user_data.display_name,
-        }
-        USER_SETTINGS_DB[user_id] = UserSettings(
-            user_id=user_id,
-            default_location="Salt Lake, Sector V",
+        record = User(
+            email=email,
+            password_hash=hash_password(data.password),
+            display_name=data.display_name.strip(),
+        )
+        record.preferences = UserPreference(
+            default_location=settings.default_location,
             dietary_preference="all",
             budget_preference="medium",
             max_delivery_time=45,
         )
-        token = create_access_token({"sub": user_id, "email": email})
-        _log.info("User registered: %s (user_id=%s)", email, user_id)
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        profile = user_profile(record)
+        _log.info("User registered (user_id=%s)", record.id)
         return TokenResponse(
-            access_token=token,
-            user=UserProfile(id=user_id, email=email, display_name=user_data.display_name),
+            access_token=create_access_token({"sub": str(record.id), "email": record.email}),
+            user=profile,
         )
 
-    @staticmethod
-    def login(login_data: UserLogin) -> TokenResponse:
-        email = login_data.email.lower().strip()
-        record = USERS_DB.get(email)
-        if not record or not verify_password(login_data.password, record["password_hash"]):
-            _log.warning("Login failed: %s (invalid credentials)", email)
+    async def login(self, data: UserLogin, session: AsyncSession) -> TokenResponse:
+        email = data.email.lower().strip()
+        record = await session.scalar(select(User).where(User.email == email))
+        if not record or not record.is_active or not verify_password(data.password, record.password_hash):
+            _log.warning("Login failed")
             raise ValueError("Invalid email or password")
-        token = create_access_token({"sub": record["id"], "email": email})
-        _log.info("Login success: %s", email)
         return TokenResponse(
-            access_token=token,
-            user=UserProfile(
-                id=record["id"], email=record["email"], display_name=record["display_name"],
-            ),
+            access_token=create_access_token({"sub": str(record.id), "email": record.email}),
+            user=user_profile(record),
         )
 
-    @staticmethod
-    def get_user_by_id(user_id: str) -> Optional[UserProfile]:
-        for record in USERS_DB.values():
-            if record["id"] == user_id:
-                return UserProfile(
-                    id=record["id"], email=record["email"], display_name=record["display_name"],
-                )
-        return None
+    async def get_user_by_id(self, user_id: str, session: AsyncSession) -> UserProfile | None:
+        try:
+            parsed_id = UUID(user_id)
+        except ValueError:
+            return None
+        record = await session.get(User, parsed_id)
+        if not record or not record.is_active:
+            return None
+        return user_profile(record)
 
 
 auth_service = AuthService()
 
 
-# ---------------------------------------------------------------------------
-# FastAPI middleware / dependencies
-# ---------------------------------------------------------------------------
-
-_security = HTTPBearer(auto_error=False)
-
-
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
-) -> Optional[UserProfile]:
+    credentials: HTTPAuthorizationCredentials | None = Depends(_security),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserProfile | None:
     if not credentials:
         return None
     payload = decode_access_token(credentials.credentials)
-    if not payload or "sub" not in payload:
+    if not payload or not payload.get("sub"):
         return None
-    return auth_service.get_user_by_id(payload["sub"])
+    return await auth_service.get_user_by_id(payload["sub"], session)
 
 
-async def require_current_user(
-    user: Optional[UserProfile] = Depends(get_current_user),
-) -> UserProfile:
+async def require_current_user(user: UserProfile | None = Depends(get_current_user)) -> UserProfile:
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -181,3 +126,10 @@ async def require_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+async def authenticate_token(token: str, session: AsyncSession) -> UserProfile | None:
+    payload = decode_access_token(token)
+    if not payload or not payload.get("sub"):
+        return None
+    return await auth_service.get_user_by_id(payload["sub"], session)

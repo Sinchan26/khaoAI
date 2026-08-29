@@ -9,8 +9,9 @@
 const state = {
   token: localStorage.getItem('khaoai_token') || null,
   user: JSON.parse(localStorage.getItem('khaoai_user') || 'null'),
-  sessionId: 'sess-' + Math.random().toString(36).substring(2, 9),
+  sessionId: localStorage.getItem('khaoai_session_id') || crypto.randomUUID(),
   ws: null,
+  wsReady: null,
   isStreaming: false,
   settings: JSON.parse(localStorage.getItem('khaoai_settings') || 'null') || {
     default_location: 'Salt Lake, Sector V',
@@ -51,10 +52,23 @@ function showAuth() {
   appPage.style.display = 'none';
 }
 
-function showApp() {
+async function showApp() {
   authPage.style.display = 'none';
   appPage.style.display = 'flex';
+  localStorage.setItem('khaoai_session_id', state.sessionId);
+  await loadSettings();
   connectWebSocket();
+  await loadHistory();
+}
+
+async function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}), Authorization: `Bearer ${state.token}` };
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401) {
+    localStorage.removeItem('khaoai_token');
+    throw new Error('Your session expired. Please sign in again.');
+  }
+  return response;
 }
 
 authToggleLink.addEventListener('click', (e) => {
@@ -121,6 +135,7 @@ $('#btn-settings').addEventListener('click', () => {
   $('#set-budget').value = state.settings.budget_preference;
   $('#set-delivery').value = String(state.settings.max_delivery_time);
   settingsModal.style.display = 'flex';
+  refreshSwiggyStatus();
 });
 
 $('#settings-close').addEventListener('click', () => {
@@ -131,7 +146,7 @@ settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) settingsModal.style.display = 'none';
 });
 
-$('#settings-save').addEventListener('click', () => {
+$('#settings-save').addEventListener('click', async () => {
   state.settings = {
     default_location: $('#set-location').value,
     dietary_preference: $('#set-diet').value,
@@ -139,13 +154,83 @@ $('#settings-save').addEventListener('click', () => {
     max_delivery_time: parseInt($('#set-delivery').value, 10),
   };
   localStorage.setItem('khaoai_settings', JSON.stringify(state.settings));
+  const response = await apiFetch('/api/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(state.settings),
+  });
+  if (!response.ok) throw new Error('Could not save settings');
   settingsModal.style.display = 'none';
+});
+
+async function loadSettings() {
+  try {
+    const response = await apiFetch('/api/settings');
+    if (response.ok) {
+      state.settings = await response.json();
+      localStorage.setItem('khaoai_settings', JSON.stringify(state.settings));
+    }
+  } catch (error) {
+    console.warn(error.message);
+  }
+}
+
+async function refreshSwiggyStatus() {
+  const statusEl = $('#swiggy-status');
+  try {
+    const response = await apiFetch('/api/providers/swiggy/status');
+    const status = await response.json();
+    statusEl.textContent = status.connected
+      ? `Connected${status.selected_address_label ? ` · ${status.selected_address_label}` : ' · choose an address'}`
+      : (status.needs_reauthentication ? 'Connection expired — reconnect required' : 'Not connected');
+    $('#swiggy-connect').textContent = status.connected ? 'Reconnect Swiggy' : 'Connect Swiggy';
+    $('#swiggy-addresses').style.display = status.connected ? 'block' : 'none';
+  } catch (error) {
+    statusEl.textContent = error.message;
+  }
+}
+
+$('#swiggy-connect').addEventListener('click', async () => {
+  const response = await apiFetch('/api/providers/swiggy/connect', { method: 'POST' });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || 'Could not start Swiggy connection');
+  location.href = data.authorization_url;
+});
+
+$('#swiggy-addresses').addEventListener('click', async () => {
+  const response = await apiFetch('/api/providers/swiggy/addresses');
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Could not load Swiggy addresses');
+  const data = payload.data || payload;
+  const addresses = Array.isArray(data) ? data : (data.addresses || []);
+  const select = $('#swiggy-address-select');
+  select.innerHTML = '';
+  addresses.forEach((address) => {
+    const option = document.createElement('option');
+    option.value = address.addressId || address.id;
+    option.textContent = address.label || address.displayText || address.address || 'Saved address';
+    select.appendChild(option);
+  });
+  $('#swiggy-address-wrap').style.display = addresses.length ? 'block' : 'none';
+});
+
+$('#swiggy-address-select').addEventListener('change', async (event) => {
+  const option = event.target.selectedOptions[0];
+  if (!option) return;
+  const response = await apiFetch('/api/providers/swiggy/address', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ address_id: option.value, label: option.textContent }),
+  });
+  if (!response.ok) throw new Error('Could not save Swiggy address');
+  state.settings.default_location = option.textContent;
+  $('#set-location').value = option.textContent;
+  refreshSwiggyStatus();
 });
 
 
 // ─── New Chat ────────────────────────────────────────────────────────
 $('#btn-new-chat').addEventListener('click', () => {
-  state.sessionId = 'sess-' + Math.random().toString(36).substring(2, 9);
+  state.sessionId = crypto.randomUUID();
+  localStorage.setItem('khaoai_session_id', state.sessionId);
   messagesDiv.innerHTML = '';
   welcomeScreen.style.display = 'flex';
   if (state.ws) { state.ws.close(); state.ws = null; }
@@ -157,24 +242,42 @@ $('#btn-new-chat').addEventListener('click', () => {
 document.querySelectorAll('.chip').forEach((chip) => {
   chip.addEventListener('click', () => {
     const prompt = chip.dataset.prompt;
-    if (prompt) sendMessage(prompt);
+    if (prompt) sendMessage(prompt).catch((error) => appendAssistantMessage(error.message));
   });
 });
 
 
 // ─── WebSocket ───────────────────────────────────────────────────────
 function connectWebSocket() {
-  if (state.ws && state.ws.readyState <= 1) return;
+  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.wsReady) return state.wsReady;
+  if (state.ws && state.ws.readyState === WebSocket.CONNECTING && state.wsReady) return state.wsReady;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = `${proto}//${location.host}/api/chat/ws/${state.sessionId}`;
-  if (state.token) url += `?token=${encodeURIComponent(state.token)}`;
-
-  state.ws = new WebSocket(url);
+  const socket = new WebSocket(url);
+  state.ws = socket;
+  let readyResolve;
+  let readyReject;
+  state.wsReady = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   let streamingEl = null;
   let streamedText = '';
 
-  state.ws.onmessage = (event) => {
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ type: 'auth', token: state.token }));
+  };
+
+  socket.onmessage = (event) => {
     const msg = JSON.parse(event.data);
+
+    if (msg.type === 'authenticated') {
+      readyResolve(socket);
+      return;
+    }
+
+    if (msg.type === 'error') {
+      removeStatus();
+      appendAssistantMessage(msg.content || 'Connection error');
+      return;
+    }
 
     if (msg.type === 'status') {
       removeStatus();
@@ -227,17 +330,25 @@ function connectWebSocket() {
     }
   };
 
-  state.ws.onclose = () => {
+  socket.onclose = () => {
     state.isStreaming = false;
     updateSendButton();
+    readyReject(new Error('Chat connection closed'));
+    if (state.ws === socket) {
+      state.ws = null;
+      state.wsReady = null;
+    }
   };
+  socket.onerror = () => readyReject(new Error('Could not connect to chat'));
+  return state.wsReady;
 }
 
 
 // ─── Send Message ────────────────────────────────────────────────────
-function sendMessage(text) {
+async function sendMessage(text) {
   if (!text.trim() || state.isStreaming) return;
-  if (!state.ws || state.ws.readyState !== 1) connectWebSocket();
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) await connectWebSocket();
+  else if (state.wsReady) await state.wsReady;
 
   welcomeScreen.style.display = 'none';
   appendUserMessage(text);
@@ -253,9 +364,34 @@ function sendMessage(text) {
   scrollToBottom();
 }
 
-chatForm.addEventListener('submit', (e) => {
+async function loadHistory() {
+  try {
+    const response = await apiFetch(`/api/chat/history/${encodeURIComponent(state.sessionId)}`);
+    if (response.status === 404) return;
+    if (!response.ok) return;
+    const history = await response.json();
+    if (!history.length) return;
+    welcomeScreen.style.display = 'none';
+    messagesDiv.innerHTML = '';
+    history.forEach((message) => {
+      if (message.role === 'user') appendUserMessage(message.content);
+      else {
+        const element = appendAssistantMessage(message.content);
+        if (message.recommendations?.length) element.appendChild(buildFoodCards(message.recommendations));
+      }
+    });
+  } catch (error) {
+    console.warn(error.message);
+  }
+}
+
+chatForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  sendMessage(chatInput.value);
+  try {
+    await sendMessage(chatInput.value);
+  } catch (error) {
+    appendAssistantMessage(error.message);
+  }
 });
 
 chatInput.addEventListener('input', updateSendButton);
@@ -293,7 +429,10 @@ function appendStatus(text) {
   const el = document.createElement('div');
   el.className = 'msg-status';
   el.id = 'current-status';
-  el.innerHTML = `<span class="status-dot"></span>${text}`;
+  const dot = document.createElement('span');
+  dot.className = 'status-dot';
+  el.appendChild(dot);
+  el.appendChild(document.createTextNode(String(text)));
   messagesDiv.appendChild(el);
   scrollToBottom();
 }
@@ -312,8 +451,8 @@ function buildFoodCards(items) {
     const card = document.createElement('div');
     card.className = 'food-card';
 
-    const platformClass = item.platform?.toLowerCase() === 'tomato' ? 'tomato' : 'twiggy';
-    const platformLabel = item.platform?.toLowerCase() === 'tomato' ? '🍅 Tomato' : '🌿 Twiggy';
+    const platformClass = 'swiggy';
+    const platformLabel = 'Swiggy';
 
     let badgesHtml = '';
     if (item.badges && item.badges.length > 0) {
@@ -323,12 +462,12 @@ function buildFoodCards(items) {
           if (b.includes('Cheapest')) cls += 'badge-cheapest';
           else if (b.includes('Top')) cls += 'badge-toprated';
           else if (b.includes('Superfast') || b.includes('Fast')) cls += 'badge-fast';
-          return `<span class="${cls}">${b}</span>`;
+          return `<span class="${cls}">${escHtml(String(b))}</span>`;
         }).join('') +
         '</div>';
     }
 
-    const vegIcon = item.is_veg ? '🟢' : '🔴';
+    const vegIcon = item.is_veg === true ? '🟢' : (item.is_veg === false ? '🔴' : '⚪');
 
     card.innerHTML = `
       <div class="food-card-header">
@@ -337,9 +476,9 @@ function buildFoodCards(items) {
       </div>
       <div class="food-card-restaurant">${escHtml(item.restaurant_name)}</div>
       <div class="food-card-meta">
-        <span class="food-card-price">₹${item.price}</span>
-        <span class="food-card-rating">⭐ ${item.rating}</span>
-        <span>🕐 ${item.delivery_time_mins} min</span>
+        <span class="food-card-price">₹${Math.round(item.price)}</span>
+        ${item.rating != null ? `<span class="food-card-rating">⭐ ${escHtml(String(item.rating))}</span>` : ''}
+        ${item.delivery_time_mins != null ? `<span>🕐 ${escHtml(String(item.delivery_time_mins))} min</span>` : ''}
       </div>
       ${badgesHtml}
     `;
@@ -365,10 +504,10 @@ function buildTraceToggle(trace) {
   let stepsHtml = (trace.steps || []).map((s) => {
     const status = s.error ? '✗' : '✓';
     const summary = Object.entries(s.output_summary || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
-    return `<span class="trace-node">${s.node}</span> ${status} <span class="trace-time">${Math.round(s.duration_ms)}ms</span>  ${summary}`;
+    return `<span class="trace-node">${escHtml(String(s.node))}</span> ${status} <span class="trace-time">${Math.round(s.duration_ms)}ms</span>  ${escHtml(summary)}`;
   }).join('\n');
 
-  panel.innerHTML = `<span class="trace-path">Path: ${pathStr}</span>\n<span class="trace-time">Total: ${Math.round(trace.total_duration_ms)}ms</span>\n\n${stepsHtml}`;
+  panel.innerHTML = `<span class="trace-path">Path: ${escHtml(pathStr)}</span>\n<span class="trace-time">Total: ${Math.round(trace.total_duration_ms)}ms</span>\n\n${stepsHtml}`;
 
   btn.addEventListener('click', () => {
     const open = panel.style.display !== 'none';
@@ -396,7 +535,7 @@ function escHtml(str) {
 
 function formatMarkdown(text) {
   if (!text) return '';
-  return text
+  return escHtml(String(text))
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
@@ -405,6 +544,10 @@ function formatMarkdown(text) {
 
 
 // ─── Init ────────────────────────────────────────────────────────────
+if (new URLSearchParams(location.search).has('swiggy')) {
+  history.replaceState({}, '', location.pathname);
+}
+
 if (state.token && state.user) {
   showApp();
 } else {

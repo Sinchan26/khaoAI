@@ -8,14 +8,15 @@ This module is the single place where:
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from pydantic_settings import BaseSettings
 
+from wrapper.config import settings
 from wrapper.graph.nodes import (
     classify_intent_node,
     food_searcher_node,
@@ -35,31 +36,17 @@ from wrapper.log import (
 _log = get_logger("graph")
 
 
-# ---------------------------------------------------------------------------
-# Settings
-# ---------------------------------------------------------------------------
-
-class _Settings(BaseSettings):
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    default_location: str = os.getenv("DEFAULT_LOCATION", "Salt Lake, Sector V")
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
-
-
-settings = _Settings()
-
-
 def get_llm(temperature: float = 0.3) -> ChatOpenAI:
     """Return a configured ChatOpenAI instance."""
-    api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY", "dummy-key-for-init")
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
     return ChatOpenAI(
         model=settings.openai_model,
         temperature=temperature,
-        api_key=api_key,
+        api_key=settings.openai_api_key,
         max_tokens=800,
+        timeout=20,
+        max_retries=2,
     )
 
 
@@ -100,7 +87,7 @@ def _build_food_graph() -> Any:
     graph.add_edge("ranker", "response_formatter")
     graph.add_edge("response_formatter", END)
 
-    compiled = graph.compile()
+    compiled = graph.compile(checkpointer=MemorySaver())
     _log.info("[+] LangGraph compiled: 5 nodes, 6 edges")
     _log.info("Graph topology:")
     _log.info("  START -> intent_classifier")
@@ -125,13 +112,17 @@ async def orchestrate(
     location: Optional[str] = None,
     preferences: Optional[dict[str, Any]] = None,
     request_id: Optional[str] = None,
+    session_id: str,
+    user_id: str,
+    history: Optional[list[dict[str, Any]]] = None,
+    provider_context: Any | None = None,
 ) -> dict[str, Any]:
     """Run the food-recommendation graph end-to-end.
 
     Returns a dict with ``reply``, ``recommendations``, ``meal_type``,
     ``location``, and ``graph_trace``.
     """
-    trace = GraphTrace(query=message)
+    trace = GraphTrace(query=message, owner_user_id=user_id)
     if request_id:
         trace.request_id = request_id
     trace.started_at = time.perf_counter()
@@ -141,16 +132,31 @@ async def orchestrate(
     _log.info("/-- Graph START  (request_id=%s)", trace.request_id)
 
     prefs = preferences or {}
+    graph_messages = []
+    for item in history or []:
+        content = str(item.get("content") or "")
+        message_id = str(item.get("id") or "") or None
+        if item.get("role") == "assistant":
+            graph_messages.append(AIMessage(content=content, id=message_id))
+        else:
+            graph_messages.append(HumanMessage(content=content, id=message_id))
     initial_state: dict[str, Any] = {
         "user_query": message,
         "user_location": location or prefs.get("default_location") or settings.default_location,
         "food_preferences": prefs,
-        "messages": [],
+        "messages": graph_messages,
         "current_step": "start",
     }
 
+    provider_context_token = None
     try:
-        result = await food_graph.ainvoke(initial_state)
+        if provider_context is not None:
+            from wrapper.providers.swiggy import set_runtime_context
+            provider_context_token = set_runtime_context(provider_context)
+        result = await food_graph.ainvoke(
+            initial_state,
+            config={"configurable": {"thread_id": f"{user_id}:{session_id}"}},
+        )
 
         trace.total_duration_ms = (time.perf_counter() - trace.started_at) * 1000
         path_str = " -> ".join(trace.path)
@@ -181,4 +187,7 @@ async def orchestrate(
         raise
 
     finally:
+        if provider_context_token is not None:
+            from wrapper.providers.swiggy import reset_runtime_context
+            reset_runtime_context(provider_context_token)
         clear_current_trace()

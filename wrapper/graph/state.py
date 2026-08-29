@@ -33,3 +33,4 @@ class FoodAgentStateSchema(TypedDict, total=False):
     final_reply: Optional[str]
     current_step: str
     error: Optional[str]
+    provider_error: Optional[str]
